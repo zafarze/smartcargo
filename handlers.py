@@ -2084,37 +2084,40 @@ async def process_excel_to_db(file_path: str) -> dict:
     return stats
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user_id):
-        logger.warning(f"Не-админ (ID: {user_id}) попытался загрузить файл.")
-        return
-
-    doc = update.message.document
+    # 1. Получаем ID пользователя
+    user_id = update.effective_user.id 
     
-    # Проверка расширения
-    if not doc.file_name or not doc.file_name.lower().endswith(('.xlsx', '.xls', '.csv')):
-        logger.info(f"Админ {user_id} загрузил неподдерживаемый файл: {doc.file_name}")
-        await update.message.reply_text(
-            f"Это не похоже на Excel/CSV-файл. Пожалуйста, отправьте файл с расширением .xlsx, .xls или .csv"
-        )
+    # 2. Получаем объект документа
+    document = update.message.document
+    file_name = document.file_name
+    
+    # 3. Проверяем права админа (теперь user_id существует)
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ У вас нет прав для загрузки файлов.")
         return
 
-    temp_filename = f"temp_upload_{uuid.uuid4()}{os.path.splitext(doc.file_name)[1]}"
+    # 4. Генерируем временное имя файла
+    # ВАЖНО: используем document.file_name, а не doc.file_name
+    temp_filename = f"temp_upload_{uuid.uuid4()}{os.path.splitext(document.file_name)[1]}"
     
     await update.message.reply_text(
         "Файл получен. Обрабатываю..."
     )
     
     try:
-        file = await doc.get_file()
+        # 5. Скачиваем файл
+        # ВАЖНО: используем document.get_file(), а не doc.get_file()
+        file = await document.get_file()
         await file.download_to_drive(temp_filename)
         
         await update.message.reply_text(
             f"✅ Файл сохранен. Начинаю импорт (структура: Трек | Дата Иу | Статус Иу | Дата Душ | Статус Душ)..."
         )
         
+        # 6. Запускаем обработку
         stats = await process_excel_to_db(temp_filename)
         
+        # 7. Отправляем отчет
         if 'error' in stats:
             await update.message.reply_text(
                 f"❌ <b>Ошибка импорта:</b>\n<code>{stats['error']}</code>",
@@ -2122,7 +2125,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             report = (
-                f"<b>✅ Импорт из {doc.file_name} завершен:</b>\n\n"
+                f"<b>✅ Импорт из {document.file_name} завершен:</b>\n\n"
                 f"<b>Всего строк:</b> {stats.get('total', 0)}\n"
                 f"<b>Обновлено:</b> {stats.get('updated', 0)}\n"
                 f"<b>Привязано к клиентам:</b> {stats.get('linked', 0)}\n"
@@ -2135,6 +2138,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ <b>Критическая ошибка:</b> {e}")
         
     finally:
+        # 8. Удаляем временный файл (мусор)
         try:
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
