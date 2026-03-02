@@ -151,6 +151,24 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
             logger.warning(f"Проверка подписки не удалась (бот не админ?). Разрешаю доступ.")
             return True
         return False
+    
+def format_display_date(date_val) -> str:
+    """Преобразует дату YYYY-MM-DD в DD.MM.YYYY для красивого отображения"""
+    if not date_val or str(date_val).strip() in ['0', 'None', 'N/A']:
+        return "N/A"
+    try:
+        # Если это объект datetime.date
+        if hasattr(date_val, 'strftime'):
+            return date_val.strftime('%d.%m.%Y')
+        
+        # Если это строка формата YYYY-MM-DD
+        date_str = str(date_val).strip()
+        if len(date_str) >= 10:
+            dt = datetime.strptime(date_str[:10], '%Y-%m-%d')
+            return dt.strftime('%d.%m.%Y')
+    except Exception:
+        pass
+    return str(date_val)
 
 async def send_photo_safe(context: ContextTypes.DEFAULT_TYPE, chat_id: int, photo_path: str, caption: str = "", reply_markup=None, text_fallback: str = ""):
     try:
@@ -492,21 +510,21 @@ async def build_status_text_safe(order: dict, lang: str) -> str:
     track_code = order['track_code']
     
     if order.get('status_delivered'):
-        date_str = order.get('date_delivered') or "N/A"
+        date_str = format_display_date(order.get('date_delivered'))
         return get_text('track_code_found_other', lang).format(
             code=track_code, 
             status=f"{order['status_delivered']} ({date_str})"
         )
         
     if order.get('status_dushanbe'):
-        date_str = order.get('date_dushanbe') or "N/A"
+        date_str = format_display_date(order.get('date_dushanbe'))
         return get_text('track_code_found_dushanbe', lang).format(
             code=track_code, 
             date=date_str
         )
         
     if order.get('status_yiwu'):
-        date_str = order.get('date_yiwu') or "N/A"
+        date_str = format_display_date(order.get('date_yiwu'))
         return get_text('track_code_found_yiwu', lang).format(
             code=track_code, 
             date=date_str
@@ -852,20 +870,20 @@ async def lk_show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     for order in orders:
         status_text = "В обработке"
-        date_text = order.get('date_yiwu') or "N/A"
+        date_text = format_display_date(order.get('date_yiwu')) # <-- Изменение тут
         
         if order.get('status_delivered'):
             status_text = get_text('status_delivered', lang)
-            date_text = order.get('date_delivered') or "N/A"
+            date_text = format_display_date(order.get('date_delivered')) # <-- Изменение тут
         elif order.get('status_delivered') == 'Запрошена':
              status_text = get_text('status_deliveryrequested', lang)
-             date_text = order.get('date_dushanbe') or "N/A"
+             date_text = format_display_date(order.get('date_dushanbe')) # <-- Изменение тут
         elif order.get('status_dushanbe'):
             status_text = get_text('status_dushanbe', lang)
-            date_text = order.get('date_dushanbe') or "N/A"
+            date_text = format_display_date(order.get('date_dushanbe')) # <-- Изменение тут
         elif order.get('status_yiwu'):
             status_text = get_text('status_yiwu', lang)
-            date_text = order.get('date_yiwu') or "N/A"
+            date_text = format_display_date(order.get('date_yiwu')) # <-- И здесь
 
         response += get_text('lk_order_item', lang).format(
             code=order['track_code'],
