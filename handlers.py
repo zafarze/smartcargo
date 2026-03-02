@@ -153,19 +153,19 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
         return False
     
 def format_display_date(date_val) -> str:
-    """Преобразует дату YYYY-MM-DD в DD.MM.YYYY для красивого отображения"""
+    """Преобразует дату YYYY-MM-DD в нужный формат DD.MM.YYYY с учетом смещения"""
     if not date_val or str(date_val).strip() in ['0', 'None', 'N/A']:
         return "N/A"
     try:
-        # Если это объект datetime.date
         if hasattr(date_val, 'strftime'):
-            return date_val.strftime('%d.%m.%Y')
+            # Меняем местами месяц (%m) и день (%d)
+            return date_val.strftime('%m.%d.%Y')
         
-        # Если это строка формата YYYY-MM-DD
         date_str = str(date_val).strip()
         if len(date_str) >= 10:
             dt = datetime.strptime(date_str[:10], '%Y-%m-%d')
-            return dt.strftime('%d.%m.%Y')
+            # И здесь тоже меняем
+            return dt.strftime('%m.%d.%Y')
     except Exception:
         pass
     return str(date_val)
