@@ -130,11 +130,15 @@ def _upsert_user_sync(user_id, full_name, phone, address, username, lang='ru'):
 
 def _get_user_sync(user_id):
     conn = get_db()
-    if not conn: return None
+    if not conn: 
+        raise ConnectionError("Не удалось получить подключение к БД")
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             return cur.fetchone()
+    except Exception as e:
+        logger.error(f"Database error in _get_user_sync: {e}")
+        raise
     finally:
         release_db(conn)
 
@@ -190,8 +194,6 @@ def _request_delivery_multiple_sync(track_codes, address):
     if not conn: return False
     try:
         with conn.cursor() as cur:
-            # Обновляем статус заказа на "Запрошена"
-            # Примечание: Адрес юзера обновляется отдельно, тут мы просто метим заказы
             for code in track_codes:
                 cur.execute("""
                     UPDATE orders 
@@ -211,7 +213,6 @@ def _get_delivery_requests_sync():
     if not conn: return []
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # Получаем заказы со статусом 'Запрошена' и данные пользователей
             query = """
                 SELECT o.track_code, o.user_id, u.full_name, u.phone_number, u.address
                 FROM orders o
@@ -279,13 +280,12 @@ def _admin_upsert_order_sync(track_code, status, date_yiwu, date_dushanbe, owner
     if not conn: return False
     try:
         with conn.cursor() as cur:
-            # Определяем поля статусов
             s_yiwu, s_dush, s_del = None, None, None
             
             if status.lower() in ['yiwu', 'иу']: s_yiwu = 'Иу'
             elif status.lower() in ['dushanbe', 'душанбе']: s_dush = 'Душанбе'
             elif status.lower() in ['delivered', 'доставлен']: s_del = 'Доставлен'
-            else: s_yiwu = status # Фолбек
+            else: s_yiwu = status 
 
             query = """
                 INSERT INTO orders (track_code, user_id, status_yiwu, date_yiwu, status_dushanbe, date_dushanbe, status_delivered)
@@ -312,10 +312,9 @@ def _upsert_order_from_excel_sync(track_code, status_yiwu, date_yiwu, status_dus
     if not conn: return None
     try:
         with conn.cursor() as cur:
-            # Проверяем, был ли заказ привязан
             cur.execute("SELECT user_id FROM orders WHERE track_code = %s", (track_code,))
             res = cur.fetchone()
-            was_unlinked = True if res and res[0] else False # Если уже был user_id, значит был привязан
+            was_unlinked = True if res and res[0] else False 
 
             query = """
                 INSERT INTO orders (track_code, status_yiwu, date_yiwu, status_dushanbe, date_dushanbe, status_delivered, date_delivered)
@@ -330,8 +329,6 @@ def _upsert_order_from_excel_sync(track_code, status_yiwu, date_yiwu, status_dus
                     updated_at = CURRENT_TIMESTAMP
             """
             cur.execute(query, (track_code, status_yiwu, date_yiwu, status_dushanbe, date_dushanbe, status_delivered, date_delivered))
-            
-            # Проверяем привязку после вставки (если она произошла автоматически где-то еще, но у нас логика привязки отдельная)
             conn.commit()
             return {'was_unlinked': False} 
     except Exception as e:
@@ -359,10 +356,6 @@ def _get_dushanbe_notifications_sync():
     if not conn: return []
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # Ищем заказы:
-            # 1. Статус содержит "Душанбе"
-            # 2. Есть привязанный юзер (user_id IS NOT NULL)
-            # 3. Уведомление еще не отправлено (notification_sent IS FALSE)
             query = """
                 SELECT o.track_code, o.user_id, u.language_code 
                 FROM orders o
@@ -393,7 +386,7 @@ async def get_user(user_id):
 async def register_user(user_id, full_name, phone_number, address, username, language_code):
     return await asyncio.to_thread(_upsert_user_sync, user_id, full_name, phone_number, address, username, language_code)
 
-async def upsert_user(**kwargs): # Алиас для совместимости
+async def upsert_user(**kwargs): 
     return await asyncio.to_thread(_upsert_user_sync, kwargs.get('user_id'), kwargs.get('full_name'), kwargs.get('phone'), kwargs.get('address'), kwargs.get('username'), kwargs.get('lang'))
 
 async def update_user_lang(user_id, lang):
@@ -418,7 +411,6 @@ async def link_order_to_user(track_code, user_id):
     return await asyncio.to_thread(_link_order_to_user_sync, str(track_code), user_id)
 
 async def request_delivery_multiple(track_codes, address):
-    # Обновляем адрес юзера и ставим статус
     return await asyncio.to_thread(_request_delivery_multiple_sync, track_codes, address)
 
 async def get_delivery_requests():
@@ -458,14 +450,12 @@ async def upsert_order_from_excel(track_code, status_yiwu, date_yiwu, status_dus
         str(track_code), status_yiwu, date_yiwu, status_dushanbe, date_dushanbe, status_delivered, date_delivered
     )
 
-# Совместимость с jobs.py
 async def get_dushanbe_arrivals_to_notify():
     return await asyncio.to_thread(_get_dushanbe_notifications_sync)
 
 async def set_dushanbe_notification_sent(track_code):
     return await asyncio.to_thread(_set_notification_sent_sync, str(track_code))
 
-# Заглушки
 async def get_order(track_code): return await get_order_by_track_code(track_code)
 async def request_delivery(track_code, address): return await request_delivery_multiple([track_code], address)
 async def get_delivered_orders(): return [] 

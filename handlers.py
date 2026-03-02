@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # handlers.py
 # (!!!) ВЕРСИЯ С ИСПРАВЛЕННЫМ ПАРСЕРОМ EXCEL, ВИДЕО И КНОПКАМИ (!!!)
+# + SENIOR UPDATE: Защита БД в /start и фоновый парсинг Excel
 
 import os
 from datetime import datetime
@@ -146,8 +147,6 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
         return member.status in ['creator', 'administrator', 'member']
     except Exception as e:
         logger.error(f"Ошибка проверки подписки для {user_id} в {CHANNEL_USERNAME}: {e}")
-        # Если бот не админ или канала нет - пускаем пользователя, чтобы не блокировать работу
-        # Но пишем ошибку в лог
         if "chat not found" in str(e).lower() or "bot is not a member" in str(e).lower():
             logger.warning(f"Проверка подписки не удалась (бот не админ?). Разрешаю доступ.")
             return True
@@ -211,8 +210,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     await clear_user_data(context)
     
-    db_user = await get_user(user_id)
-
+    # 🛡️ БЕЗОПАСНЫЙ ЗАПРОС К БД: ловим ошибки подключения
+    try:
+        db_user = await get_user(user_id)
+    except Exception as e:
+        logger.error(f"❌ Ошибка доступа к БД в /start для юзера {user_id}: {e}")
+        await update.message.reply_text(
+            "⏳ Технические работы на сервере. Пожалуйста, отправьте /start через пару минут."
+        )
+        return ConversationHandler.END # Останавливаем диалог, не идем дальше
+        
     if db_user:
         lang = db_user['language_code'] 
         context.user_data['lang'] = lang
@@ -227,12 +234,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['name_for_welcome'] = name
         
         lang_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Русский 🇷🇺", callback_data="lang_ru"),
-            InlineKeyboardButton("Тоҷикӣ 🇹🇯", callback_data="lang_tg"),
-            InlineKeyboardButton("English 🇬🇧", callback_data="lang_en")
-        ]
-    ])
+            [
+                InlineKeyboardButton("Русский 🇷🇺", callback_data="lang_ru"),
+                InlineKeyboardButton("Тоҷикӣ 🇹🇯", callback_data="lang_tg"),
+                InlineKeyboardButton("English 🇬🇧", callback_data="lang_en")
+            ]
+        ])
         
         await update.message.reply_text(
             TEXTS['ru']['welcome'].format(name=name),
@@ -350,6 +357,7 @@ async def register_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         phone = update.message.contact.phone_number
     else:
         phone = update.message.text.strip()
+    phone = re.sub(r'[\s\-\(\)]', '', phone)
         
     if not re.match(r'^\+?\d{9,15}$', phone):
         await update.message.reply_text(get_text('registration_invalid_phone', lang))
@@ -441,9 +449,6 @@ async def track_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def link_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Обрабатывает callback-кнопку 'link_ТРЕККОД' – привязывает найденный заказ к пользователю.
-    """
     query = update.callback_query
     await query.answer()
 
@@ -484,7 +489,6 @@ async def link_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     return MAIN_MENU
 
 async def build_status_text_safe(order: dict, lang: str) -> str:
-    """Строит текстовое описание статуса заказа на основе данных из БД."""
     track_code = order['track_code']
     
     if order.get('status_delivered'):
@@ -630,7 +634,6 @@ async def show_address_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return MAIN_MENU
 
 async def show_address_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показывает адрес. Китай - альбом из 2 фото. Таджикистан - карта + видео."""
     query = update.callback_query
     await query.answer()
     
@@ -638,47 +641,35 @@ async def show_address_callback(update: Update, context: ContextTypes.DEFAULT_TY
     address_type = query.data.split('_')[1]
     
     if address_type == "china":
-        # --- КИТАЙ (АЛЬБОМ ИЗ 2 ФОТО) ---
         caption = get_text('address_caption_china', lang)
-        
         media_group = []
         
-        # Проверяем и добавляем первое фото (с описанием)
         if os.path.exists(PHOTO_ADDRESS_CHINA_PATH):
             media_group.append(
                 InputMediaPhoto(open(PHOTO_ADDRESS_CHINA_PATH, 'rb'), caption=caption, parse_mode=ParseMode.HTML)
             )
             
-        # Проверяем и добавляем второе фото
         if os.path.exists(PHOTO_ADDRESS_CHINA_2_PATH):
-            # Если первого фото не было, описание добавим ко второму
             cap = caption if not media_group else None 
             media_group.append(
                 InputMediaPhoto(open(PHOTO_ADDRESS_CHINA_2_PATH, 'rb'), caption=cap, parse_mode=ParseMode.HTML)
             )
             
         if media_group:
-            # Отправляем группу фото (альбом)
             await context.bot.send_media_group(chat_id=query.message.chat_id, media=media_group)
         else:
-            # Если фото нет, просто текст
             await send_photo_safe(
                 context, query.message.chat_id, PHOTO_ADDRESS_CHINA_PATH, caption,
                 text_fallback=get_text('photo_address_error', lang).format(address=caption)
             )
 
     else:
-        # --- ТАДЖИКИСТАН (МГНОВЕННО) ---
-        
-        # 1. Сначала Геолокация (Карта)
         LATITUDE = 38.557575
         LONGITUDE =  68.764847
         await query.message.reply_location(latitude=LATITUDE, longitude=LONGITUDE)
 
-        # 2. Текст + Кнопка видео
         caption = get_text('address_caption_tajikistan', lang)
         
-        # Текст кнопки на языках
         btn_text = "🎬 Video Guide"
         if lang == 'ru': btn_text = "🎬 Видео проезда (Нажми)"
         elif lang == 'tg': btn_text = "🎬 Видео роҳбалад (Зер кунед)"
@@ -687,7 +678,6 @@ async def show_address_callback(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton(btn_text, callback_data="show_video_tajik")]
         ])
 
-        # 3. Отправляем фото адреса с кнопкой
         if os.path.exists(PHOTO_ADDRESS_TAJIK_PATH):
              await send_photo_safe(context, query.message.chat_id, PHOTO_ADDRESS_TAJIK_PATH, caption, reply_markup=keyboard)
         else:
@@ -696,27 +686,22 @@ async def show_address_callback(update: Update, context: ContextTypes.DEFAULT_TY
     return MAIN_MENU
 
 async def show_video_tajik_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отправляет видео с уведомлением о загрузке."""
     query = update.callback_query
     lang = context.user_data.get('lang', 'ru')
     
-    # 1. Уведомление вверху экрана (всплывашка)
     wait_text = "⏳ Загружаю видео..."
     if lang == 'tg': wait_text = "⏳ Видео боргирӣ шуда истодааст..."
     elif lang == 'en': wait_text = "⏳ Uploading video..."
     
     await query.answer(wait_text)
     
-    # Проверяем наличие файла (путь берется из config.py)
     if not os.path.exists(VIDEO_ADDRESS_TAJIK_PATH):
         await query.message.reply_text("⚠️ Видео файл не найден (File not found).")
         return MAIN_MENU
 
     try:
-        # 2. Пишем сообщение "Подождите", чтобы клиент не паниковал
         status_msg = await query.message.reply_text(f"{wait_text} 0%")
         
-        # 3. Отправляем видео
         with open(VIDEO_ADDRESS_TAJIK_PATH, 'rb') as video_file:
             await query.message.reply_video(
                 video=video_file,
@@ -724,12 +709,11 @@ async def show_video_tajik_callback(update: Update, context: ContextTypes.DEFAUL
                     "📍 Улица Дилкушо, 26/1\n"
                     "Сино район, Душанбе (Ориентир: бозорчаи Ҷал-Ҷам)"
                 ),
-                supports_streaming=True, # Позволяет смотреть сразу, не скачивая полностью
+                supports_streaming=True, 
                 read_timeout=60,
                 write_timeout=60
             )
         
-        # 4. Удаляем сообщение "Загружаю..." после успеха
         try:
             await status_msg.delete()
         except:
@@ -804,7 +788,14 @@ async def lk_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user = update.effective_user
     lang = context.user_data['lang']
     
-    db_user = await get_user(user.id)
+    # Защита от сбоя БД
+    try:
+        db_user = await get_user(user.id)
+    except Exception as e:
+        logger.error(f"❌ Ошибка доступа к БД в lk_menu_start: {e}")
+        await update.message.reply_text("⏳ Технические проблемы. Попробуйте позже.")
+        return LK_MENU
+
     if not db_user:
         await update.message.reply_text(get_text('registration_required', lang))
         return await start(update, context)
@@ -848,7 +839,6 @@ async def lk_show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return LK_MENU
 
 async def lk_show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показывает заказы пользователя с отображением статуса доставки"""
     user_id = update.effective_user.id
     lang = context.user_data['lang']
     
@@ -887,23 +877,17 @@ async def lk_show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return LK_MENU
 
 async def lk_delivery_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показывает заказы, готовые к доставке, с проверкой статуса из БД"""
     user_id = update.effective_user.id
     lang = context.user_data['lang']
     
     all_orders = await get_user_orders(user_id)
     
-    # Фильтруем заказы: только те, что в Душанбе и без запроса/доставки
     available_orders = []
-    
-    # Список статусов, которые считаем "Прибывшими" (в нижнем регистре)
     target_statuses = ['в душанбе', 'душанбе', 'dushanbe'] 
 
     for order in all_orders:
         status_db = order['status_dushanbe']
         is_in_dushanbe = (status_db and status_db.strip().lower() in target_statuses)
-        
-        # Проверяем новый 'status_delivered'
         is_requested_or_delivered = order.get('status_delivered') is not None
         
         if is_in_dushanbe and not is_requested_or_delivered:
@@ -953,7 +937,6 @@ async def lk_delivery_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return LK_MENU
 
 async def lk_select_delivery_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает выбор заказа для доставки (один или все)"""
     query = update.callback_query
     await query.answer()
     
@@ -961,7 +944,6 @@ async def lk_select_delivery_order(update: Update, context: ContextTypes.DEFAULT
     lang = context.user_data['lang']
     
     track_code_str = query.data.split('_')[2]
-    
     prompt_text = ""
     
     if track_code_str == "ALL":
@@ -977,7 +959,6 @@ async def lk_select_delivery_order(update: Update, context: ContextTypes.DEFAULT
         
     else:
         track_code = track_code_str
-        
         order = await get_order_by_track_code(track_code)
         
         if not order or order.get('status_delivered') is not None:
@@ -985,10 +966,8 @@ async def lk_select_delivery_order(update: Update, context: ContextTypes.DEFAULT
             return LK_MENU
         
         context.user_data['delivery_track_codes'] = [track_code] 
-        
         prompt_text = get_text('order_delivery_prompt', lang).format(track_code=track_code)
 
-    
     db_user = await get_user(user_id)
     saved_address = db_user.get('address') if db_user else None
     
@@ -1023,7 +1002,6 @@ async def lk_select_delivery_order(update: Update, context: ContextTypes.DEFAULT
     return LK_MENU
 
 async def lk_delivery_use_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Использует сохраненный адрес для доставки"""
     query = update.callback_query
     await query.answer()
     
@@ -1040,7 +1018,6 @@ async def lk_delivery_use_saved(update: Update, context: ContextTypes.DEFAULT_TY
     return await lk_save_delivery_request(update, context, saved_address)
 
 async def lk_delivery_use_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрашивает ввод нового адреса"""
     query = update.callback_query
     await query.answer()
     
@@ -1050,19 +1027,16 @@ async def lk_delivery_use_new(update: Update, context: ContextTypes.DEFAULT_TYPE
     return LK_AWAIT_DELIVERY_ADDRESS
 
 async def lk_delivery_address_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет новый адрес доставки (из ввода)"""
     new_address = update.message.text
     return await lk_save_delivery_request(update, context, new_address)
 
 async def lk_save_delivery_request(update: Update, context: ContextTypes.DEFAULT_TYPE, address: str) -> int:
-    """Сохраняет запрос доставки в БД и уведомляет админов"""
     if update.message:
         user_id = update.message.from_user.id
     else:
         user_id = update.callback_query.from_user.id
         
     lang = context.user_data['lang']
-    
     track_codes_list = context.user_data.get('delivery_track_codes')
     
     if not track_codes_list:
@@ -1073,12 +1047,10 @@ async def lk_save_delivery_request(update: Update, context: ContextTypes.DEFAULT
         return LK_MENU
     
     success = await request_delivery_multiple(track_codes_list, address)
-    
     track_codes_str = ", ".join([f"<code>{c}</code>" for c in track_codes_list])
     
     if success:
         logger.info(f"Delivery request created for {track_codes_str} (user {user_id})")
-        
         success_text = get_text('order_delivery_request_sent', lang)
         
         if update.message:
@@ -1113,9 +1085,7 @@ async def lk_save_delivery_request(update: Update, context: ContextTypes.DEFAULT
     
     return LK_MENU
 
-
 async def lk_delivery_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет процесс запроса доставки"""
     query = update.callback_query
     await query.answer()
     
@@ -1209,6 +1179,7 @@ async def lk_edit_phone_save(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_lk_keyboard(lang, is_admin(user_id))
         )
         return LK_MENU
+    new_phone = re.sub(r'[\s\-\(\)]', '', new_phone)
         
     if not re.match(r'^\+?\d{9,15}$', new_phone):
         await update.message.reply_text(get_text('registration_invalid_phone', lang))
@@ -1309,9 +1280,7 @@ async def admin_show_delivery_requests(update: Update, context: ContextTypes.DEF
             }
         user_requests[uid]['track_codes'].append(req['track_code'])
         
-    
     for user_id, data in user_requests.items():
-        
         codes_str = ", ".join([f"<code>{c}</code>" for c in data['track_codes']])
         
         msg = get_text('admin_delivery_requests_item', 'ru').format(
@@ -1592,208 +1561,6 @@ async def admin_mark_delivered(update: Update, context: ContextTypes.DEFAULT_TYP
     return
 
 # =================================================================
-# --- 6. ОБРАБОТЧИКИ ФАЙЛОВ И ОШИБОК ---
-# =================================================================
-
-async def image_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get('lang', 'ru')
-    await update.message.reply_text(get_text('image_received', lang))
-
-async def invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get('lang', 'ru')
-    user_id = update.effective_user.id
-    
-    await update.message.reply_text(
-        get_text('invalid_input', lang),
-        reply_markup=get_main_keyboard(lang, is_admin(user_id))
-    )
-    return MAIN_MENU
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update: {update} caused error: {context.error}", exc_info=context.error)
-    
-    if update and update.effective_message:
-        try:
-            lang = context.user_data.get('lang', 'ru')
-            await update.effective_message.reply_text(get_text('error', lang))
-        except Exception as e:
-            logger.error(f"Failed to send error message to user: {e}")
-
-# =================================================================
-# --- 7. СБОРКА CONVERSATION HANDLERS ---
-# =================================================================
-
-def get_main_conv_handler() -> ConversationHandler:
-    
-    lang_filter = filters.TEXT & (~filters.COMMAND)
-
-    entry_points = [
-        CommandHandler("start", start),
-        CommandHandler("help", show_help),
-
-        CallbackQueryHandler(select_language, pattern='^lang_'),
-        CallbackQueryHandler(process_subscription_check, pattern='^check_subscription$'),
-        CallbackQueryHandler(show_address_callback, pattern='^address_'),
-        CallbackQueryHandler(show_video_tajik_callback, pattern='^show_video_tajik$'),
-        CallbackQueryHandler(change_language_callback, pattern='^set_lang_'),
-        CallbackQueryHandler(lk_edit_address_start, pattern='^lk_edit_address$'),
-        CallbackQueryHandler(lk_edit_phone_start, pattern='^lk_edit_phone$'),
-        CallbackQueryHandler(lk_select_delivery_order, pattern='^delivery_select_'),
-        CallbackQueryHandler(lk_delivery_use_saved, pattern='^delivery_use_saved$'),
-        CallbackQueryHandler(lk_delivery_use_new, pattern='^delivery_use_new$'),
-        CallbackQueryHandler(lk_delivery_cancel, pattern='^delivery_cancel$'),
-        CallbackQueryHandler(admin_confirm_delivery_callback, pattern='^admin_confirm_'),
-        CallbackQueryHandler(delivered_page_callback, pattern='^delivered_page_'),
-        CallbackQueryHandler(link_order_callback, pattern='^link_'),
-    ]
-    
-    states = {
-        AWAITING_LANG_CHOICE: [
-            CallbackQueryHandler(select_language, pattern='^lang_')
-        ],
-        
-        AWAITING_SUBSCRIPTION: [
-            CallbackQueryHandler(process_subscription_check, pattern='^check_subscription$')
-        ],
-
-        AWAITING_FULL_NAME: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)
-        ],
-        AWAITING_PHONE: [
-            MessageHandler(filters.CONTACT | (filters.TEXT & ~filters.COMMAND), register_phone)
-        ],
-        AWAITING_ADDRESS: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, register_address)
-        ],
-
-        MAIN_MENU: [
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[0][0]}|{get_text('main_buttons', 'tg')[0][0]}|{get_text('main_buttons', 'en')[0][0]})$"), track_order_start),
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[0][1]}|{get_text('main_buttons', 'tg')[0][1]}|{get_text('main_buttons', 'en')[0][1]})$"), lk_menu_start),
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[1][0]}|{get_text('main_buttons', 'tg')[1][0]}|{get_text('main_buttons', 'en')[1][0]})$"), show_contacts),
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[1][1]}|{get_text('main_buttons', 'tg')[1][1]}|{get_text('main_buttons', 'en')[1][1]})$"), show_prices),
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[2][0]}|{get_text('main_buttons', 'tg')[2][0]}|{get_text('main_buttons', 'en')[2][0]})$"), show_forbidden),
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[2][1]}|{get_text('main_buttons', 'tg')[2][1]}|{get_text('main_buttons', 'en')[2][1]})$"), show_address_menu),
-            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[3][0]}|{get_text('main_buttons', 'tg')[3][0]}|{get_text('main_buttons', 'en')[3][0]})$"), change_language_start),
-            
-            CallbackQueryHandler(show_address_callback, pattern='^address_'),
-            CallbackQueryHandler(change_language_callback, pattern='^set_lang_'),
-            CallbackQueryHandler(link_order_callback, pattern='^link_'),
-            
-            # (!!!) ДОБАВЛЕН ОБРАБОТЧИК КНОПКИ ВИДЕО В MAIN_MENU (!!!)
-            CallbackQueryHandler(show_video_tajik_callback, pattern='^show_video_tajik$'),
-            
-            MessageHandler(filters.TEXT & ~filters.COMMAND, process_track_code)
-        ],
-        
-        AWAITING_TRACK_CODE: [
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'ru')}$"), lk_back_to_main),
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'tg')}$"), lk_back_to_main),
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'en')}$"), lk_back_to_main),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, process_track_code)
-        ],
-
-        LK_MENU: [
-            MessageHandler(lang_filter & filters.Regex(
-                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[2][0])}|{re.escape(get_text('lk_menu_buttons', 'tg')[2][0])}|{re.escape(get_text('lk_menu_buttons', 'en')[2][0])})$"
-            ), lk_back_to_main),
-            
-            MessageHandler(lang_filter & filters.Regex(
-                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[0][0])}|{re.escape(get_text('lk_menu_buttons', 'tg')[0][0])}|{re.escape(get_text('lk_menu_buttons', 'en')[0][0])})$"
-            ), lk_show_orders),
-            MessageHandler(lang_filter & filters.Regex(
-                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[0][1])}|{re.escape(get_text('lk_menu_buttons', 'tg')[0][1])}|{re.escape(get_text('lk_menu_buttons', 'en')[0][1])})$"
-            ), lk_show_profile),
-            MessageHandler(lang_filter & filters.Regex(
-                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[1][0])}|{re.escape(get_text('lk_menu_buttons', 'tg')[1][0])}|{re.escape(get_text('lk_menu_buttons', 'en')[1][0])})$"
-            ), lk_delivery_start),
-            
-            MessageHandler(lang_filter & filters.Regex(REGEX_DELIVERY_REQUESTS), admin_show_delivery_requests),
-            MessageHandler(lang_filter & filters.Regex(REGEX_DELIVERED_LIST), admin_show_delivered_list),
-            MessageHandler(lang_filter & filters.Regex(REGEX_STATS), admin_show_stats),
-            MessageHandler(lang_filter & filters.Regex(REGEX_BROADCAST), admin_broadcast_start),
-            MessageHandler(lang_filter & filters.Regex(REGEX_DOWNLOAD_EXCEL), admin_download_excel),
-            
-            MessageHandler(lang_filter & filters.Regex(REGEX_ADMIN_PROFILE), lk_show_profile),
-            
-            CallbackQueryHandler(lk_edit_address_start, pattern='^lk_edit_address$'),
-            CallbackQueryHandler(lk_edit_phone_start, pattern='^lk_edit_phone$'),
-            CallbackQueryHandler(lk_select_delivery_order, pattern='^delivery_select_'),
-            CallbackQueryHandler(lk_delivery_use_saved, pattern='^delivery_use_saved$'),
-            CallbackQueryHandler(lk_delivery_use_new, pattern='^delivery_use_new$'),
-            CallbackQueryHandler(lk_delivery_cancel, pattern='^delivery_cancel$'),
-            CallbackQueryHandler(admin_confirm_delivery_callback, pattern='^admin_confirm_'),
-            CallbackQueryHandler(delivered_page_callback, pattern='^delivered_page_'),
-            
-            MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_input)
-        ],
-        
-        LK_AWAIT_DELIVERY_ADDRESS: [
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'ru')}$"), lk_menu_start),
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'tg')}$"), lk_menu_start),
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'en')}$"), lk_menu_start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, lk_delivery_address_save),
-        ],
-        
-        LK_AWAIT_PROFILE_ADDRESS: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, lk_edit_address_save),
-        ],
-
-        LK_AWAIT_PHONE: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, lk_edit_phone_save),
-        ],
-    }
-
-    return ConversationHandler(
-        entry_points=entry_points,
-        states=states,
-        fallbacks=[
-        CommandHandler("start", start),
-        CommandHandler("help", show_help)
-    ],
-        persistent=True,
-        name="main_conversation",
-        per_message=False
-    )
-
-def get_broadcast_conv_handler() -> ConversationHandler:
-    
-    YES_BROADCAST = "Да, отправить"
-    NO_BROADCAST = "Нет, отменить"
-    confirm_filter = filters.Regex(f"^({YES_BROADCAST})$")
-    cancel_filter = filters.Regex(
-        f"^({NO_BROADCAST}|"
-        f"{get_text('cancel_button', 'ru')}|"
-        f"{get_text('cancel_button', 'tg')}|"
-        f"{get_text('cancel_button', 'en')})$"
-    )
-
-    return ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('lk_admin_menu_buttons', 'ru')[1][1]}$"), admin_broadcast_start),
-        ],
-        states={
-            AWAITING_BROADCAST_MESSAGE: [
-                MessageHandler(cancel_filter, admin_broadcast_cancel),
-                CommandHandler("cancel", admin_broadcast_cancel),
-                MessageHandler(filters.ALL & ~filters.COMMAND, admin_broadcast_confirm)
-            ],
-            CONFIRM_BROADCAST: [
-                MessageHandler(confirm_filter, admin_broadcast_send),
-                MessageHandler(cancel_filter, admin_broadcast_cancel),
-                CommandHandler("cancel", admin_broadcast_cancel)
-            ]
-        },
-        fallbacks=[
-            CommandHandler("cancel", admin_broadcast_cancel),
-            CommandHandler("start", start)
-        ],
-        map_to_parent={
-            LK_MENU: LK_MENU,
-            MAIN_MENU: MAIN_MENU
-        }
-    )
-
-# =================================================================
 # --- 8. ДИАЛОГ АДМИНА: ДОБАВЛЕНИЕ/РЕДАКТИРОВАНИЕ ЗАКАЗА ---
 # =================================================================
 
@@ -1965,18 +1732,13 @@ def parse_date_safe(date_str):
     except:
         return None
 
-async def process_excel_to_db(file_path: str) -> dict:
+def _read_and_parse_excel_sync(file_path: str):
     """
-    ВЕРСИЯ: СТРОГАЯ ЛОГИКА (5 КОЛОНОК)
-    Формат: [Трек] [Дата Иу] [Статус Иу] [Дата Душанбе] [Статус Душанбе]
+    Синхронная функция для чтения Excel. 
+    Выполняется в отдельном потоке (Thread), чтобы не блокировать Event Loop бота.
     """
-    stats = {'total': 0, 'updated': 0, 'failed': 0, 'linked': 0}
-    
     try:
-        logger.info(f"--- НАЧАЛО ЗАГРУЗКИ (СТРОГИЙ РЕЖИМ): {file_path} ---")
-        
         try:
-            # Читаем файл. header=0 означает, что первая строка - это заголовки (мы их пропустим)
             df = pd.read_excel(file_path, header=0, dtype=str)
         except:
             df = pd.read_csv(file_path, header=0, dtype=str, sep=None, engine='python')
@@ -1987,23 +1749,15 @@ async def process_excel_to_db(file_path: str) -> dict:
         if len(df.columns) < 2:
             return {'error': 'В файле слишком мало колонок! Нужно минимум 3: Трек, Дата Иу, Статус.'}
 
-        logger.info(f"Колонки (по порядку): {list(df.columns)}")
-
         excel_data = []
         
         for idx, row in df.iterrows():
-            # ==========================================
-            # 1. ТРЕК-КОД (Колонка №1 / индекс 0)
-            # ==========================================
             raw_track = row.iloc[0] 
             if pd.isna(raw_track) or str(raw_track).strip() == '': continue
             
             track_code = str(raw_track).strip().upper()
             if len(track_code) < 3: continue # Пропускаем мусор
 
-            # ==========================================
-            # 2. ИУ (Колонка №2 - Дата, №3 - Статус)
-            # ==========================================
             date_yiwu = None
             status_yiwu = "Иу" # По умолчанию (если ячейка пустая)
 
@@ -2016,9 +1770,6 @@ async def process_excel_to_db(file_path: str) -> dict:
                 val = str(row.iloc[2]).strip()
                 if val: status_yiwu = val
 
-            # ==========================================
-            # 3. ДУШАНБЕ (Колонка №4 - Дата, №5 - Статус)
-            # ==========================================
             date_dushanbe = None
             status_dushanbe = None
             status_delivered = None
@@ -2035,19 +1786,15 @@ async def process_excel_to_db(file_path: str) -> dict:
                 
                 if val_status:
                     if any(x in val_lower for x in ['доставлен', 'выдан', 'delivered']):
-                        # Если написано "Доставлен"
                         status_delivered = "Доставлен"
-                        date_delivered = date_dushanbe # Дата выдачи = Дата Душанбе
-                        status_dushanbe = "Душанбе" # Оставляем историю
+                        date_delivered = date_dushanbe
+                        status_dushanbe = "Душанбе" 
                     elif any(x in val_lower for x in ['душанбе', 'прибыл', 'dushanbe']):
-                        # Если написано "Душанбе"
                         status_dushanbe = "Душанбе"
                     else:
-                        # Любой другой текст
                         status_dushanbe = val_status
             
             # АВТО-СТАТУС: Если даты Душанбе нет, но дата Иу есть -> Статус Иу
-            # Если дата Душанбе есть, а статус пустой -> Ставим "Душанбе"
             if date_dushanbe and not status_dushanbe:
                 status_dushanbe = "Душанбе"
 
@@ -2061,9 +1808,32 @@ async def process_excel_to_db(file_path: str) -> dict:
                 'status_delivered': status_delivered, 
                 'date_delivered': date_delivered,
             })
+            
+        return excel_data
+        
+    except Exception as e:
+        return {'error': str(e)}
+
+async def process_excel_to_db(file_path: str) -> dict:
+    """
+    Асинхронный контроллер загрузки данных в БД.
+    """
+    stats = {'total': 0, 'updated': 0, 'failed': 0, 'linked': 0}
+    
+    try:
+        logger.info(f"--- НАЧАЛО ЗАГРУЗКИ (СТРОГИЙ РЕЖИМ): {file_path} ---")
+        
+        # 🚀 ОТПРАВЛЯЕМ PANDAS В ДРУГОЙ ПОТОК, ЧТОБЫ БОТ НЕ ЗАВИСАЛ
+        parsed_result = await asyncio.to_thread(_read_and_parse_excel_sync, file_path)
+        
+        # Проверяем, не было ли ошибок при парсинге
+        if isinstance(parsed_result, dict) and 'error' in parsed_result:
+            return parsed_result
+            
+        excel_data = parsed_result
 
     except Exception as e:
-        logger.error(f"❌ ОШИБКА EXCEL: {e}", exc_info=True)
+        logger.error(f"❌ ОШИБКА EXCEL (Асинхронная часть): {e}", exc_info=True)
         return {'error': str(e)}
 
     # Запись в БД
@@ -2084,20 +1854,15 @@ async def process_excel_to_db(file_path: str) -> dict:
     return stats
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1. Получаем ID пользователя
     user_id = update.effective_user.id 
     
-    # 2. Получаем объект документа
     document = update.message.document
     file_name = document.file_name
     
-    # 3. Проверяем права админа (теперь user_id существует)
     if not is_admin(user_id):
         await update.message.reply_text("⛔ У вас нет прав для загрузки файлов.")
         return
 
-    # 4. Генерируем временное имя файла
-    # ВАЖНО: используем document.file_name, а не doc.file_name
     temp_filename = f"temp_upload_{uuid.uuid4()}{os.path.splitext(document.file_name)[1]}"
     
     await update.message.reply_text(
@@ -2105,8 +1870,6 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
-        # 5. Скачиваем файл
-        # ВАЖНО: используем document.get_file(), а не doc.get_file()
         file = await document.get_file()
         await file.download_to_drive(temp_filename)
         
@@ -2114,10 +1877,8 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Файл сохранен. Начинаю импорт (структура: Трек | Дата Иу | Статус Иу | Дата Душ | Статус Душ)..."
         )
         
-        # 6. Запускаем обработку
         stats = await process_excel_to_db(temp_filename)
         
-        # 7. Отправляем отчет
         if 'error' in stats:
             await update.message.reply_text(
                 f"❌ <b>Ошибка импорта:</b>\n<code>{stats['error']}</code>",
@@ -2138,10 +1899,206 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ <b>Критическая ошибка:</b> {e}")
         
     finally:
-        # 8. Удаляем временный файл (мусор)
         try:
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
                 logger.info(f"Удален временный файл: {temp_filename}")
         except Exception as e:
             logger.warning(f"Не удалось удалить временный файл: {e}")
+
+# =================================================================
+# --- 10. ОБРАБОТЧИКИ ОШИБОК И СБОРКА КОНВЕРСАЦИЙ ---
+# =================================================================
+
+async def image_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get('lang', 'ru')
+    await update.message.reply_text(get_text('image_received', lang))
+
+async def invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get('lang', 'ru')
+    user_id = update.effective_user.id
+    
+    await update.message.reply_text(
+        get_text('invalid_input', lang),
+        reply_markup=get_main_keyboard(lang, is_admin(user_id))
+    )
+    return MAIN_MENU
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update: {update} caused error: {context.error}", exc_info=context.error)
+    
+    if update and update.effective_message:
+        try:
+            lang = context.user_data.get('lang', 'ru')
+            await update.effective_message.reply_text(get_text('error', lang))
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+
+def get_main_conv_handler() -> ConversationHandler:
+    
+    lang_filter = filters.TEXT & (~filters.COMMAND)
+
+    entry_points = [
+        CommandHandler("start", start),
+        CommandHandler("help", show_help),
+
+        CallbackQueryHandler(select_language, pattern='^lang_'),
+        CallbackQueryHandler(process_subscription_check, pattern='^check_subscription$'),
+        CallbackQueryHandler(show_address_callback, pattern='^address_'),
+        CallbackQueryHandler(show_video_tajik_callback, pattern='^show_video_tajik$'),
+        CallbackQueryHandler(change_language_callback, pattern='^set_lang_'),
+        CallbackQueryHandler(lk_edit_address_start, pattern='^lk_edit_address$'),
+        CallbackQueryHandler(lk_edit_phone_start, pattern='^lk_edit_phone$'),
+        CallbackQueryHandler(lk_select_delivery_order, pattern='^delivery_select_'),
+        CallbackQueryHandler(lk_delivery_use_saved, pattern='^delivery_use_saved$'),
+        CallbackQueryHandler(lk_delivery_use_new, pattern='^delivery_use_new$'),
+        CallbackQueryHandler(lk_delivery_cancel, pattern='^delivery_cancel$'),
+        CallbackQueryHandler(admin_confirm_delivery_callback, pattern='^admin_confirm_'),
+        CallbackQueryHandler(delivered_page_callback, pattern='^delivered_page_'),
+        CallbackQueryHandler(link_order_callback, pattern='^link_'),
+    ]
+    
+    states = {
+        AWAITING_LANG_CHOICE: [
+            CallbackQueryHandler(select_language, pattern='^lang_')
+        ],
+        
+        AWAITING_SUBSCRIPTION: [
+            CallbackQueryHandler(process_subscription_check, pattern='^check_subscription$')
+        ],
+
+        AWAITING_FULL_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)
+        ],
+        AWAITING_PHONE: [
+            MessageHandler(filters.CONTACT | (filters.TEXT & ~filters.COMMAND), register_phone)
+        ],
+        AWAITING_ADDRESS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, register_address)
+        ],
+
+        MAIN_MENU: [
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[0][0]}|{get_text('main_buttons', 'tg')[0][0]}|{get_text('main_buttons', 'en')[0][0]})$"), track_order_start),
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[0][1]}|{get_text('main_buttons', 'tg')[0][1]}|{get_text('main_buttons', 'en')[0][1]})$"), lk_menu_start),
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[1][0]}|{get_text('main_buttons', 'tg')[1][0]}|{get_text('main_buttons', 'en')[1][0]})$"), show_contacts),
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[1][1]}|{get_text('main_buttons', 'tg')[1][1]}|{get_text('main_buttons', 'en')[1][1]})$"), show_prices),
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[2][0]}|{get_text('main_buttons', 'tg')[2][0]}|{get_text('main_buttons', 'en')[2][0]})$"), show_forbidden),
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[2][1]}|{get_text('main_buttons', 'tg')[2][1]}|{get_text('main_buttons', 'en')[2][1]})$"), show_address_menu),
+            MessageHandler(lang_filter & filters.Regex(f"^({get_text('main_buttons', 'ru')[3][0]}|{get_text('main_buttons', 'tg')[3][0]}|{get_text('main_buttons', 'en')[3][0]})$"), change_language_start),
+            
+            CallbackQueryHandler(show_address_callback, pattern='^address_'),
+            CallbackQueryHandler(change_language_callback, pattern='^set_lang_'),
+            CallbackQueryHandler(link_order_callback, pattern='^link_'),
+            
+            CallbackQueryHandler(show_video_tajik_callback, pattern='^show_video_tajik$'),
+            
+            MessageHandler(filters.TEXT & ~filters.COMMAND, process_track_code)
+        ],
+        
+        AWAITING_TRACK_CODE: [
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'ru')}$"), lk_back_to_main),
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'tg')}$"), lk_back_to_main),
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'en')}$"), lk_back_to_main),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, process_track_code)
+        ],
+
+        LK_MENU: [
+            MessageHandler(lang_filter & filters.Regex(
+                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[2][0])}|{re.escape(get_text('lk_menu_buttons', 'tg')[2][0])}|{re.escape(get_text('lk_menu_buttons', 'en')[2][0])})$"
+            ), lk_back_to_main),
+            
+            MessageHandler(lang_filter & filters.Regex(
+                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[0][0])}|{re.escape(get_text('lk_menu_buttons', 'tg')[0][0])}|{re.escape(get_text('lk_menu_buttons', 'en')[0][0])})$"
+            ), lk_show_orders),
+            MessageHandler(lang_filter & filters.Regex(
+                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[0][1])}|{re.escape(get_text('lk_menu_buttons', 'tg')[0][1])}|{re.escape(get_text('lk_menu_buttons', 'en')[0][1])})$"
+            ), lk_show_profile),
+            MessageHandler(lang_filter & filters.Regex(
+                f"^({re.escape(get_text('lk_menu_buttons', 'ru')[1][0])}|{re.escape(get_text('lk_menu_buttons', 'tg')[1][0])}|{re.escape(get_text('lk_menu_buttons', 'en')[1][0])})$"
+            ), lk_delivery_start),
+            
+            MessageHandler(lang_filter & filters.Regex(REGEX_DELIVERY_REQUESTS), admin_show_delivery_requests),
+            MessageHandler(lang_filter & filters.Regex(REGEX_DELIVERED_LIST), admin_show_delivered_list),
+            MessageHandler(lang_filter & filters.Regex(REGEX_STATS), admin_show_stats),
+            MessageHandler(lang_filter & filters.Regex(REGEX_BROADCAST), admin_broadcast_start),
+            MessageHandler(lang_filter & filters.Regex(REGEX_DOWNLOAD_EXCEL), admin_download_excel),
+            
+            MessageHandler(lang_filter & filters.Regex(REGEX_ADMIN_PROFILE), lk_show_profile),
+            
+            CallbackQueryHandler(lk_edit_address_start, pattern='^lk_edit_address$'),
+            CallbackQueryHandler(lk_edit_phone_start, pattern='^lk_edit_phone$'),
+            CallbackQueryHandler(lk_select_delivery_order, pattern='^delivery_select_'),
+            CallbackQueryHandler(lk_delivery_use_saved, pattern='^delivery_use_saved$'),
+            CallbackQueryHandler(lk_delivery_use_new, pattern='^delivery_use_new$'),
+            CallbackQueryHandler(lk_delivery_cancel, pattern='^delivery_cancel$'),
+            CallbackQueryHandler(admin_confirm_delivery_callback, pattern='^admin_confirm_'),
+            CallbackQueryHandler(delivered_page_callback, pattern='^delivered_page_'),
+            
+            MessageHandler(filters.TEXT & ~filters.COMMAND, invalid_input)
+        ],
+        
+        LK_AWAIT_DELIVERY_ADDRESS: [
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'ru')}$"), lk_menu_start),
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'tg')}$"), lk_menu_start),
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('cancel_button', 'en')}$"), lk_menu_start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, lk_delivery_address_save),
+        ],
+        
+        LK_AWAIT_PROFILE_ADDRESS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, lk_edit_address_save),
+        ],
+
+        LK_AWAIT_PHONE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, lk_edit_phone_save),
+        ],
+    }
+
+    return ConversationHandler(
+        entry_points=entry_points,
+        states=states,
+        fallbacks=[
+        CommandHandler("start", start),
+        CommandHandler("help", show_help)
+    ],
+        persistent=True,
+        name="main_conversation",
+        per_message=False
+    )
+
+def get_broadcast_conv_handler() -> ConversationHandler:
+    
+    YES_BROADCAST = "Да, отправить"
+    NO_BROADCAST = "Нет, отменить"
+    confirm_filter = filters.Regex(f"^({YES_BROADCAST})$")
+    cancel_filter = filters.Regex(
+        f"^({NO_BROADCAST}|"
+        f"{get_text('cancel_button', 'ru')}|"
+        f"{get_text('cancel_button', 'tg')}|"
+        f"{get_text('cancel_button', 'en')})$"
+    )
+
+    return ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.TEXT & filters.Regex(f"^{get_text('lk_admin_menu_buttons', 'ru')[1][1]}$"), admin_broadcast_start),
+        ],
+        states={
+            AWAITING_BROADCAST_MESSAGE: [
+                MessageHandler(cancel_filter, admin_broadcast_cancel),
+                CommandHandler("cancel", admin_broadcast_cancel),
+                MessageHandler(filters.ALL & ~filters.COMMAND, admin_broadcast_confirm)
+            ],
+            CONFIRM_BROADCAST: [
+                MessageHandler(confirm_filter, admin_broadcast_send),
+                MessageHandler(cancel_filter, admin_broadcast_cancel),
+                CommandHandler("cancel", admin_broadcast_cancel)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", admin_broadcast_cancel),
+            CommandHandler("start", start)
+        ],
+        map_to_parent={
+            LK_MENU: LK_MENU,
+            MAIN_MENU: MAIN_MENU
+        }
+    )

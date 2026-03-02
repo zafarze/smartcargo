@@ -62,7 +62,7 @@ TEXTS = {
             "🇨🇳 Китай: +86 172 8051 0553\n\n"
             "Режим работы: с 9:00 до 18:00\n"
             "Перерыв: с 12:45 до 14:00\n\n"
-            f"✈️ Канал: {CHANNEL_USERNAME}\n"
+            "✈️ Канал: https://t.me/+mzHC2tsmw65mOGY1\n"
             "📷 Инстаграм: <a href='https://www.instagram.com/_smart_cargo'>_smart_cargo</a>"
         ),
         "prices_text": (
@@ -124,7 +124,7 @@ TEXTS = {
         ),
         
         # --- БЛОК ДЛЯ ПОДПИСКИ ---
-        "subscribe_prompt": f"Чтобы продолжить, пожалуйста, подпишитесь на наш канал: {CHANNEL_USERNAME}",
+        "subscribe_prompt": "Чтобы продолжить, пожалуйста, подпишитесь на наш канал: https://t.me/+mzHC2tsmw65mOGY1",
         "subscribe_button_channel": "SmartCargo Channel",
         "subscribe_button_check": "Я подписался ✅",
         "checking_button": "Проверка...",
@@ -312,7 +312,7 @@ TEXTS = {
             "🇨🇳 China: +86 172 8051 0553\n\n"
             "Working hours: 9:00 to 18:00\n"
             "Break: 12:45 to 14:00\n\n"
-            f"✈️ Channel: {CHANNEL_USERNAME}\n"
+            "✈️ Channel: https://t.me/+mzHC2tsmw65mOGY1\n"
             "📷 Instagram: <a href='https://instagram.com/_smart_cargo'>_smart_cargo</a>"
         ),
         "prices_text": (
@@ -374,7 +374,7 @@ TEXTS = {
         ),
         
         # --- SUBSCRIPTION BLOCK ---
-        "subscribe_prompt": f"To continue, please subscribe to our channel: {CHANNEL_USERNAME}",
+        "subscribe_prompt": "To continue, please subscribe to our channel: https://t.me/+mzHC2tsmw65mOGY1",
         "subscribe_button_channel": "SmartCargo Channel",
         "subscribe_button_check": "I subscribed ✅",
         "checking_button": "Checking...",
@@ -555,7 +555,7 @@ TEXTS = {
             "🇨🇳 Хитой: +86 172 8051 0553\n\n"
             "Реҷаи кори: аз 9:00 то 18:00\n"
             "Танаффус: аз 12:45 до 14:00\n\n"
-            f"✈️ Канал: {CHANNEL_USERNAME}\n"
+            "✈️ Канал: https://t.me/+mzHC2tsmw65mOGY1\n"
             "📷 Инстаграм: <a href='https://www.instagram.com/_smart_cargo'>_smart_cargo</a>"
         ),
         "prices_text": (
@@ -617,7 +617,7 @@ TEXTS = {
         ),
         
         # --- БЛОК ДЛЯ ПОДПИСКИ ---
-        "subscribe_prompt": f"Барои идома, лутфан ба канали мо обуна шавед: {CHANNEL_USERNAME}",
+        "subscribe_prompt": "Барои идома, лутфан ба канали мо обуна шавед: https://t.me/+mzHC2tsmw65mOGY1",
         "subscribe_button_channel": "SmartCargo Channel",
         "subscribe_button_check": "Ман обуна шудам ✅",
         "checking_button": "Санҷида мешавад...",

@@ -38,7 +38,7 @@ if not DATABASE_URL:
 # --- 4. Настройки SmartCargo ---
 PROJECT_NAME = "SmartCargo"
 XLSX_FILENAME = "SmartCargo.xlsx"
-CHANNEL_USERNAME = "@S_C_A_R_G_O" 
+CHANNEL_USERNAME = "+mzHC2tsmw65mOGY1"
 SUPPORT_USERNAME = "@smartcargo_support" 
 
 # --- 5. ID Администраторов ---
